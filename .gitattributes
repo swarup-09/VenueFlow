@@ -1,0 +1,19 @@
+# Normalise line endings to LF in the repo; let Git handle CRLF on checkout
+* text=auto eol=lf
+
+# Force LF for these specific file types
+*.py   text eol=lf
+*.sql  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+*.sh   text eol=lf
+Dockerfile* text eol=lf
+
+# Binary files — do not touch
+*.png  binary
+*.jpg  binary
+*.gif  binary
+*.ico  binary
+*.zip  binary

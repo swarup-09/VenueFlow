@@ -1,0 +1,171 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VenueFlow Phase 2 – Full Stack
+# Services: Kafka 4.2.0 (KRaft) · TimescaleDB · Kafka UI
+#           FastAPI Producer · Kafka Consumer · Intelligence Layer
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  venueflow-net:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  timescale-data:
+
+services:
+
+  # ── Kafka 4.2.0 in KRaft mode (no Zookeeper) ──────────────────────────────
+  kafka:
+    image: apache/kafka:4.0.0
+    container_name: vf-kafka
+    hostname: kafka
+    networks: [venueflow-net]
+    ports:
+      - "9092:9092"      # external clients
+      - "9093:9093"      # controller
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_LOG_SEGMENT_BYTES: 10485760
+      CLUSTER_ID: "vf-cluster-001"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── Topic initialiser (runs once, then exits) ─────────────────────────────
+  kafka-init:
+    image: apache/kafka:4.0.0
+    container_name: vf-kafka-init
+    networks: [venueflow-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "
+      echo 'Creating VenueFlow topics...'
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+        --create --if-not-exists --topic vf_crowd_raw \
+        --partitions 4 --replication-factor 1 \
+        --config retention.ms=86400000
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+        --create --if-not-exists --topic vf_queues_raw \
+        --partitions 4 --replication-factor 1 \
+        --config retention.ms=86400000
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+        --create --if-not-exists --topic vf_ble_raw \
+        --partitions 2 --replication-factor 1 \
+        --config retention.ms=86400000
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+        --create --if-not-exists --topic vf_cctv_raw \
+        --partitions 2 --replication-factor 1 \
+        --config retention.ms=86400000
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+        --create --if-not-exists --topic vf_intelligence_out \
+        --partitions 2 --replication-factor 1 \
+        --config retention.ms=43200000
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+        --create --if-not-exists --topic vf_alerts \
+        --partitions 1 --replication-factor 1 \
+        --config retention.ms=43200000
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+        --create --if-not-exists --topic vf_orders \
+        --partitions 2 --replication-factor 1 \
+        --config retention.ms=86400000
+      echo 'All topics created.'
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
+      "
+    restart: "no"
+
+  # ── Kafka UI ──────────────────────────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: vf-kafka-ui
+    networks: [venueflow-net]
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: venueflow
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # ── TimescaleDB (PostgreSQL + time-series extension) ──────────────────────
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: vf-timescaledb
+    networks: [venueflow-net]
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: venueflow
+      POSTGRES_USER: vf_user
+      POSTGRES_PASSWORD: vf_secret
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vf_user -d venueflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── FastAPI Producer (Sensing Layer + API) ────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: vf-api
+    networks: [venueflow-net]
+    ports:
+      - "8000:8000"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DATABASE_URL: postgresql+asyncpg://vf_user:vf_secret@timescaledb:5432/venueflow
+    depends_on:
+      kafka:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Kafka Consumer + Intelligence Layer ───────────────────────────────────
+  consumer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.consumer
+    container_name: vf-consumer
+    networks: [venueflow-net]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DATABASE_URL: postgresql+asyncpg://vf_user:vf_secret@timescaledb:5432/venueflow
+    depends_on:
+      kafka:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped

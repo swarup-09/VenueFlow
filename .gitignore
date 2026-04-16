@@ -1,0 +1,76 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+
+# Test & coverage artefacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+nosetests.xml
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyright/
+
+# ── Environment / Secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+# Keep docker-compose.yml but ignore generated override files
+docker-compose.override.yml
+
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── TimescaleDB / Postgres local data (if mounted) ────────────────────────────
+pgdata/
+postgres_data/
+
+# ── Kafka local storage ───────────────────────────────────────────────────────
+kafka_data/
+kraft-combined-logs/
+
+# ── OS artefacts ──────────────────────────────────────────────────────────────
+.DS_Store
+desktop.ini
