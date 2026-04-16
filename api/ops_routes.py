@@ -208,12 +208,21 @@ async def _fetch_zones_with_stands() -> list[dict]:
 
 async def _fetch_gate_throughput() -> dict[str, dict]:
     """
-    Pull the most recent 1-minute gate throughput from crowd_1min.
-    Gate zones are those whose zone name starts with 'Gate-'.
-    Falls back gracefully if the view is empty (before first consumer run).
+    Determine the current density for each gate zone by merging two sources:
+
+    1. `crowd_1min` continuous aggregate — live sensor pipeline data (primary).
+    2. `digital_twin_zones` — authoritative live state, updated by the consumer
+       AND by direct DB writes (e.g. manual ops overrides / test injections).
+
+    For each gate we take the **maximum** density reported by either source so
+    that both live sensor data and manual DB updates trigger hard-block detection.
+    This ensures the test scenario (direct INSERT/UPDATE on digital_twin_zones)
+    works without waiting for the Kafka consumer pipeline to materialise data.
     """
     pool = await get_pool()
-    rows = await pool.fetch(
+
+    # Source 1 — crowd_1min (continuous aggregate, populated by consumer)
+    agg_rows = await pool.fetch(
         """
         SELECT DISTINCT ON (zone)
             zone,
@@ -228,12 +237,41 @@ async def _fetch_gate_throughput() -> dict[str, dict]:
     )
 
     throughput: dict[str, dict] = {}
-    for r in rows:
+    for r in agg_rows:
         throughput[r["zone"]] = {
-            "avg_density":  float(r["avg_density"] or 0.0),
+            "avg_density":   float(r["avg_density"] or 0.0),
             "avg_flow_rate": float(r["avg_flow_rate"] or 0.0),
             "max_headcount": int(r["max_headcount"] or 0),
         }
+
+    # Source 2 — digital_twin_zones (authoritative; includes manual overrides)
+    twin_rows = await pool.fetch(
+        """
+        SELECT zone, density
+        FROM digital_twin_zones
+        WHERE zone LIKE 'Gate-%%'
+        """
+    )
+
+    for r in twin_rows:
+        gate = r["zone"]
+        twin_density = float(r["density"] or 0.0)
+        if gate in throughput:
+            # Take the higher density — whichever source is more alarming wins
+            if twin_density > throughput[gate]["avg_density"]:
+                log.debug(
+                    "Gate %s: digital_twin density (%.2f) overrides crowd_1min (%.2f)",
+                    gate, twin_density, throughput[gate]["avg_density"],
+                )
+                throughput[gate]["avg_density"] = twin_density
+        else:
+            # Gate not yet in crowd_1min — use Digital Twin as sole source
+            throughput[gate] = {
+                "avg_density":   twin_density,
+                "avg_flow_rate": 0.0,
+                "max_headcount": 0,
+            }
+
     return throughput
 
 
